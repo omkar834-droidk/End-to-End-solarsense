@@ -1,0 +1,24 @@
+services:
+  api:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      SOLARSENSE_ADMIN_API_KEY: ${SOLARSENSE_ADMIN_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes: ["./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+    depends_on: [api]
+
+  grafana:
+    image: grafana/grafana:latest
+    volumes: ["./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro"]
+    ports: ["3000:3000"]
+    depends_on: [prometheus]

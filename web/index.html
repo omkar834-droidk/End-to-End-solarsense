@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolarSense</title>
+<style>
+:root{--bg:#0f1720;--card:#17212d;--line:#263445;--ink:#e8eef5;--mut:#8ea0b4;--sun:#f5b301;--ok:#34c38f;--bad:#f46a6a;--blue:#5aa9e6}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{padding:18px 28px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+h1{font-size:19px;margin:0}h1 b{color:var(--sun)}.sub{color:var(--mut);font-size:12.5px}
+main{padding:22px 28px;display:grid;gap:18px;max-width:1280px;margin:auto}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+.kpi small{color:var(--mut);display:block}.kpi strong{font-size:24px}.kpi em{font-style:normal;color:var(--mut);font-size:12px}
+.grid{display:grid;grid-template-columns:2fr 1fr;gap:18px}@media(max-width:900px){.grid{grid-template-columns:1fr}}
+h2{font-size:14px;margin:0 0 10px}canvas{max-height:300px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)}th{color:var(--mut);font-weight:500}
+.tag{padding:2px 8px;border-radius:99px;font-size:12px;font-weight:600}
+.t-inverter_outage{background:#4a1f24;color:var(--bad)}.t-string_fault{background:#4a3a14;color:var(--sun)}.t-soiling{background:#1b3a4d;color:var(--blue)}
+button,input{background:#0f1720;color:var(--ink);border:1px solid var(--line);border-radius:7px;padding:7px 12px;font:inherit}
+button{cursor:pointer;background:var(--sun);color:#1a1300;border:0;font-weight:600}button:disabled{opacity:.6}
+.wo{border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px}.wo ul{margin:6px 0 0 18px;padding:0;color:var(--mut)}
+pre{white-space:pre-wrap;color:var(--ink);margin:8px 0 0;font:inherit}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--sun)}
+</style>
+</head>
+<body>
+<header><div><h1><b>Solar</b>Sense</h1><div class="sub" id="plant">Loading plant…</div></div><div class="sub" id="asof"></div></header>
+<main>
+  <section class="kpis" id="kpis"></section>
+  <section class="grid">
+    <div class="card"><div class="row"><h2 style="margin:0">Day-ahead forecast (P10 to P90)</h2><input type="date" id="day"></div><canvas id="fc"></canvas></div>
+    <div class="card"><h2>Daily performance ratio</h2><canvas id="pr"></canvas></div>
+  </section>
+  <section class="grid">
+    <div class="card"><h2>Detected anomalies (last 30 days)</h2><table><thead><tr><th>Type</th><th>Start</th><th>Loss</th><th>Revenue lost</th><th>State</th></tr></thead><tbody id="an"></tbody></table></div>
+    <div class="card"><div class="row"><h2 style="margin:0">O&amp;M agent</h2><button id="run">Run diagnosis</button></div><div id="agent" class="sub">Scans the plant, quantifies losses, prioritises and drafts work orders.</div></div>
+  </section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const j=(u,o)=>fetch(u,o).then(r=>{if(!r.ok)throw new Error(u+" "+r.status);return r.json()});
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const inr=n=>"INR "+Number(n).toLocaleString("en-IN");
+let fcChart,prChart;
+function kpi(label,val,note,cls=""){return `<div class="card kpi"><small>${label}</small><strong class="${cls}">${val}</strong><br><em>${note}</em></div>`}
+async function init(){
+  const [plant,dsm,drift,an,perf]=await Promise.all([j("/api/plant"),j("/api/dsm?days=60"),j("/api/drift"),j("/api/anomalies?days=30"),j("/api/performance?days=60")]);
+  $("#plant").textContent=`${plant.name} · ${plant.capacity_kw/1000} MW · model v${plant.model_version}`;
+  $("#asof").textContent="Data as of "+plant.as_of.slice(0,16);
+  const v=plant.validation, open=an.anomalies.filter(a=>a.ongoing).length, lastPr=perf.daily.filter(d=>d.pr!=null).slice(-1)[0];
+  $("#kpis").innerHTML=
+    kpi("Forecast error (nMAE)",v.nmae_pct+"%",v.persistence_nmae_pct?`persistence baseline ${v.persistence_nmae_pct}%`:"validation window")+
+    kpi("P10–P90 coverage",v.coverage_p10_p90_pct+"%","nominal target 80%",v.coverage_p10_p90_pct<75?"warn":"ok")+
+    kpi("Simulated DSM saving",inr(dsm.savings_inr),`${dsm.reduction_pct}% vs persistence (60 days)`)+
+    kpi("Latest performance ratio",lastPr?lastPr.pr.toFixed(3):"n/a",`reference ${perf.reference}`,lastPr&&lastPr.pr<0.9?"bad":"ok")+
+    kpi("Open anomalies",open,"ongoing in last 30 days",open?"bad":"ok")+
+    kpi("Data drift",drift.status.toUpperCase(),`max PSI ${drift.max_psi} · error ×${drift.error_ratio??"n/a"}`,drift.status==="ok"?"ok":"warn");
+  $("#an").innerHTML=an.anomalies.map(a=>`<tr><td><span class="tag t-${a.kind}">${esc(a.kind.replace("_"," "))}</span></td><td>${a.start.slice(0,10)}</td><td>${a.severity_pct}%</td><td>${inr(a.lost_inr)}</td><td class="${a.ongoing?"bad":"ok"}">${a.ongoing?"ONGOING":"resolved"}</td></tr>`).join("")||`<tr><td colspan="5" class="ok">No anomalies</td></tr>`;
+  const dd=perf.daily.filter(d=>d.pr!=null);
+  prChart=new Chart($("#pr"),{type:"line",data:{labels:dd.map(d=>d.date.slice(5)),datasets:[{data:dd.map(d=>d.pr),borderColor:"#5aa9e6",pointRadius:0,tension:.2},{data:dd.map(()=>perf.reference),borderColor:"#8ea0b4",borderDash:[5,5],pointRadius:0}]},options:{plugins:{legend:{display:false}},scales:{y:{suggestedMin:0.7,suggestedMax:1.05}}}});
+  const day=plant.as_of.slice(0,10); $("#day").value=day; $("#day").min=plant.model.train_start.slice(0,10); $("#day").max=day;
+  loadDay(day);
+}
+async function loadDay(day){
+  const f=await j("/api/forecast?day="+day), lab=f.timestamps.map(t=>t.slice(11,16));
+  const ds=[{label:"P10",data:f.p10,borderColor:"transparent",pointRadius:0},
+    {label:"P10–P90 band",data:f.p90,borderColor:"transparent",backgroundColor:"rgba(245,179,1,.22)",fill:"-1",pointRadius:0},
+    {label:"Forecast P50",data:f.p50,borderColor:"#f5b301",pointRadius:0,tension:.25},
+    {label:"Actual",data:f.actual,borderColor:"#34c38f",pointRadius:0,tension:.25}];
+  if(fcChart)fcChart.destroy();
+  fcChart=new Chart($("#fc"),{type:"line",data:{labels:lab,datasets:ds},options:{interaction:{mode:"index",intersect:false},scales:{x:{ticks:{maxTicksLimit:12}},y:{title:{display:true,text:"kW"}}},plugins:{legend:{labels:{filter:i=>i.text!=="P10"}}}}});
+}
+$("#day").addEventListener("change",e=>e.target.value&&loadDay(e.target.value).catch(()=>alert("No data for that day")));
+$("#run").addEventListener("click",async()=>{
+  const b=$("#run"),box=$("#agent");b.disabled=true;box.textContent="Agent running…";
+  try{const r=await j("/api/diagnose",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({days:30})});
+    box.innerHTML=`<div class="${r.status==="healthy"?"ok":"bad"}"><b>Status: ${esc(r.status.toUpperCase())}</b> <span class="sub">(${r.llm_used?"LLM report":"template report"})</span></div><pre>${esc(r.report)}</pre>`+
+      r.work_orders.map(w=>`<div class="wo"><b>${esc(w.id)}</b> · ${esc(w.priority)} · ${esc(w.title)}<div class="sub">${esc(w.crew)} · respond within ${w.sla_hours} h · ~${inr(w.est_loss_inr_per_day)}/day</div><ul>${w.checklist.map(c=>`<li>${esc(c)}</li>`).join("")}</ul></div>`).join("")+
+      `<div class="sub" style="margin-top:10px">Trace: ${r.trace.map(esc).join(" → ")}</div>`;
+  }catch(e){box.textContent="Diagnosis failed: "+e.message}finally{b.disabled=false}
+});
+init().catch(e=>{$("#plant").textContent="Failed to load: "+e.message});
+</script>
+</body>
+</html>
